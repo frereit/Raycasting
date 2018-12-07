@@ -7,7 +7,6 @@ using System.Drawing;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
-using Timer = System.Windows.Forms.Timer;
 
 namespace Raycasting
 {
@@ -28,7 +27,7 @@ namespace Raycasting
     
     internal class Program : Form
     {
-        private readonly Bitmap _map = new Bitmap(@"map2.png");
+        private Bitmap _map = new Bitmap(@"map.png");
         private readonly Bitmap _texture = new Bitmap(@"texture.png");
         private readonly double _fov = Math.PI/3;
         private Point _pos = new Point(50, 50);
@@ -39,7 +38,8 @@ namespace Raycasting
         private Thread runner;
         private int frames = 0;
         private double fps = 0;
-        private Stopwatch sw = new Stopwatch();
+        private Stopwatch frameStopwatch = new Stopwatch();
+        private Stopwatch deltaStopwatch = new Stopwatch();
 
         private Program()
         {
@@ -49,11 +49,13 @@ namespace Raycasting
             SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
             Paint += Draw;
             runner = new Thread(Runner);
-            runner.Start();
-            sw.Start();
+            frameStopwatch.Start();
+            deltaStopwatch.Start();
             KeyDown += KeyDownHandler;
             KeyUp += KeyUpHandler;
             Closing += StopAll;
+            
+            runner.Start();
         }
 
         private void StopAll(object sender, CancelEventArgs e)
@@ -71,8 +73,13 @@ namespace Raycasting
             }
         }
 
-        private void move(float newX, float newY)
+        private void move(bool forward, bool strafe, float deltat)
         {
+            var multDirection = forward ? 1 : -1; /* Move Backward if forward is false by subtracting */
+            var multAngle = strafe ? 1 : 0; /* Leave angle as if if not strafing */ 
+            
+            var newX = _posd.X + multDirection * ((float) Math.Cos(view_angle+(1d/2d*Math.PI*multAngle)) * deltat);
+            var newY = _posd.Y + multDirection * ((float) Math.Sin(view_angle+(1d/2d*Math.PI*multAngle)) * deltat);
             if (_map.GetPixel((int) newX, (int) newY) != Color.FromArgb(255, 255, 255, 255)) return;
             _posd.X = newX;
             _posd.Y = newY;
@@ -80,34 +87,47 @@ namespace Raycasting
 
         private void Update()
         {
+            
+            /* Recalculate FPS every frame */
+            if (frameStopwatch.ElapsedMilliseconds > 1000)
+            {
+                frameStopwatch.Restart();
+                frames = 0;
+            }
+            
+            
+            var deltat = deltaStopwatch.ElapsedMilliseconds / 10f;
+            deltaStopwatch.Restart();
             _pos.X = (int) _posd.X % Width;
             _pos.Y = (int) _posd.Y % Height;
             foreach (var key in _keys)
             {
+                
                 switch(key)
                 {
                     case Keys.Left:
-                        view_angle -= 0.05;
+                        view_angle -= 0.05 * deltat;
                         break;
                     case Keys.Right:
-                        view_angle += 0.05;
+                        view_angle += 0.05 * deltat;
                         break;
-                    case Keys.W:
-                        var newWx = _posd.X + (float) Math.Cos(view_angle);
-                        var newWy = _posd.Y + (float) Math.Sin(view_angle);
-                        move(newWx, newWy);
+                    case Keys.M:
+                        _map = new Bitmap(@"map.png");
                         break;
-                    case Keys.S:
-                        var newSx = _posd.X - (float) Math.Cos(view_angle);
-                        var newSy = _posd.Y - (float) Math.Sin(view_angle);
-                        move(newSx,newSy);
-                        break;
-                        
                 }
+
+                if (new[] {Keys.W, Keys.A, Keys.S, Keys.D}.Contains(key))
+                {
+                    var forward = key == Keys.W || key == Keys.D;
+                    var strafe = key == Keys.A || key == Keys.D;
+                    move(forward, strafe, deltat);
+                }
+                
             }
 
-            fps = frames / (sw.ElapsedMilliseconds / 1000d);
+            fps = frames / (frameStopwatch.ElapsedMilliseconds / 1000d);
             Refresh();
+            
         }
         
         private void KeyUpHandler(object sender, KeyEventArgs e)
@@ -150,6 +170,7 @@ namespace Raycasting
             }
             
             //Minimap
+            
             e.Graphics.DrawImage(_map, new Rectangle(0, 0, 100, 100));
             var smallX = (int) (_pos.X * (100.0 / _map.Width));
             var smallY = (int) (_pos.Y * (100.0 / _map.Height));
