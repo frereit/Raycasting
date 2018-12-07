@@ -8,6 +8,7 @@ namespace Raycasting
     internal class Program : Form
     {
         private readonly Bitmap _map = new Bitmap(@"map.png");
+        private readonly Bitmap _texture = new Bitmap(@"texture.png");
         private readonly double _fov = Math.PI/3;
         private Point _pos = new Point(50, 50);
         private PointF _posd = new PointF(50, 50);
@@ -102,9 +103,15 @@ namespace Raycasting
                 var distorted = Math.Sqrt((cx - _posd.X) * (cx - _posd.X) + (cy - _posd.Y) * (cy - _posd.Y));
                 var dist = Math.Cos(beta) * distorted;
                 var height = 32 / dist * ((Width/2) /Math.Tan(_fov/2));
+                
+                /* Texture Calculation */
+                var pixCol = _map.GetPixel((int) cx, (int) cy);
+                var red = (int) pixCol.R;
+                var destRect = new Rectangle(x, (int) (Height / 2 - height / 2), 1, (int) height);
+                var srcRect = new Rectangle(red, 0, 1, _texture.Height);
+                e.Graphics.DrawImage(_texture, destRect, srcRect, GraphicsUnit.Pixel);
                 var c = Color.FromArgb((int) (dist / Width * 255),(int) (dist / Width * 255),(int) (dist / Width * 255));
-                e.Graphics.DrawLine(new Pen(c), x, (int) (Height / 2 - height / 2), x, (int) (Height / 2 + height / 2));
-
+                
                 x++;
             }
 
