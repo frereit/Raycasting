@@ -1,20 +1,45 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
+using System.Threading;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
 namespace Raycasting
 {
+
+    public delegate void UpdateDelegate();
+    
+    public class Rectangles
+    {
+        /* Helper class for containing results of Raycasting Threads */
+        public Rectangle DestRect, SrcRect;
+
+        public Rectangles(Rectangle destRect, Rectangle srcRect)
+        {
+            DestRect = destRect;
+            SrcRect = srcRect;
+        }
+    }
+    
     internal class Program : Form
     {
-        private readonly Bitmap _map = new Bitmap(@"map.png");
+        private readonly Bitmap _map = new Bitmap(@"map2.png");
         private readonly Bitmap _texture = new Bitmap(@"texture.png");
         private readonly double _fov = Math.PI/3;
         private Point _pos = new Point(50, 50);
         private PointF _posd = new PointF(50, 50);
         private double view_angle = 0;
         private HashSet<Keys> _keys = new HashSet<Keys>();
-        
+        private const int ThreadCount = 16;
+        private Thread runner;
+        private int frames = 0;
+        private double fps = 0;
+        private Stopwatch sw = new Stopwatch();
 
         private Program()
         {
@@ -23,12 +48,27 @@ namespace Raycasting
             DoubleBuffered = true;
             SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
             Paint += Draw;
-            var timer = new Timer {Interval = 1};
-            timer.Tick += Update;
-            timer.Enabled = true;
-            timer.Start();
+            runner = new Thread(Runner);
+            runner.Start();
+            sw.Start();
             KeyDown += KeyDownHandler;
             KeyUp += KeyUpHandler;
+            Closing += StopAll;
+        }
+
+        private void StopAll(object sender, CancelEventArgs e)
+        {
+            runner.Abort();
+        }
+
+
+        private void Runner()
+        {
+            Thread.Sleep(100);
+            while (true)
+            {
+                Invoke(new Action(Update));
+            }
         }
 
         private void move(float newX, float newY)
@@ -37,8 +77,8 @@ namespace Raycasting
             _posd.X = newX;
             _posd.Y = newY;
         }
-        
-        private void Update(object sender, EventArgs e)
+
+        private void Update()
         {
             _pos.X = (int) _posd.X % Width;
             _pos.Y = (int) _posd.Y % Height;
@@ -65,9 +105,11 @@ namespace Raycasting
                         
                 }
             }
+
+            fps = frames / (sw.ElapsedMilliseconds / 1000d);
             Refresh();
         }
-
+        
         private void KeyUpHandler(object sender, KeyEventArgs e)
         {
             _keys.Remove(e.KeyCode);
@@ -84,9 +126,46 @@ namespace Raycasting
             e.Graphics.FillRectangle(Brushes.Cyan, 0, 0,Width, Height/2);
             e.Graphics.FillRectangle(Brushes.Beige, 0, Height/2, Width, Height/2);
             
-            var x = 0;
+            var rects = ArrayList.Synchronized(new ArrayList());
+            var count = 0;
+            for (var i = 0; i < ThreadCount; i++)
+            {
+                Interlocked.Increment(ref count);
+                var i1 = i;
+                ThreadPool.QueueUserWorkItem((object stateInfo) =>
+                {
+                    var result = Raycast(view_angle - _fov / 2 + i1 * (_fov / ThreadCount),
+                        view_angle - _fov / 2 + (i1 + 1) * (_fov / ThreadCount), _fov / Width,
+                        Width / ThreadCount * i1);
+                    rects.AddRange(result);
+                    Interlocked.Decrement(ref count);
+                });
+            }
+            while(count > 0){}
 
-            for (var angle = view_angle - _fov / 2; angle < view_angle + _fov / 2; angle += _fov / Width)
+            foreach (var rect in rects)
+            {
+                var casted = (Rectangles) rect;
+                e.Graphics.DrawImage(_texture, casted.DestRect, casted.SrcRect, GraphicsUnit.Pixel);
+            }
+            
+            //Minimap
+            e.Graphics.DrawImage(_map, new Rectangle(0, 0, 100, 100));
+            var smallX = (int) (_pos.X * (100.0 / _map.Width));
+            var smallY = (int) (_pos.Y * (100.0 / _map.Height));
+            e.Graphics.FillEllipse(Brushes.Green, smallX, smallY, 5, 5);
+            
+            e.Graphics.DrawString("FPS: " + Math.Round(fps, 2), DefaultFont, Brushes.Black, Width-90, 10);
+            frames++;
+        }
+
+        private ArrayList Raycast(double minAngle, double maxAngle, double stepSize, double xstart)
+        {
+            var rects = new ArrayList();
+            //Rendering
+            var x = xstart;
+
+            for (var angle = minAngle; angle < maxAngle; angle += stepSize)
             {
                 var cx = (double) _posd.X;
                 var cy = (double) _posd.Y;
@@ -107,21 +186,12 @@ namespace Raycasting
                 /* Texture Calculation */
                 var pixCol = _map.GetPixel((int) cx, (int) cy);
                 var red = (int) pixCol.R;
-                var destRect = new Rectangle(x, (int) (Height / 2 - height / 2), 1, (int) height);
+                var destRect = new Rectangle((int) x, (int) (Height / 2 - height / 2), 1, (int) height);
                 var srcRect = new Rectangle(red, 0, 1, _texture.Height);
-                e.Graphics.DrawImage(_texture, destRect, srcRect, GraphicsUnit.Pixel);
-                var c = Color.FromArgb((int) (dist / Width * 255),(int) (dist / Width * 255),(int) (dist / Width * 255));
-                
+                rects.Add(new Rectangles(destRect, srcRect));
                 x++;
             }
-
-            
-            //Minimap
-            e.Graphics.DrawImage(_map, new Rectangle(0, 0, 100, 100));
-            var smallX = (int) (_pos.X * (100.0 / _map.Width));
-            var smallY = (int) (_pos.Y * (100.0 / _map.Height));
-            e.Graphics.FillEllipse(Brushes.Green, smallX, smallY, 5, 5);
-            
+            return rects;
         }
 
         public static void Main(string[] args)
