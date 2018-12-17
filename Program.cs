@@ -27,14 +27,21 @@ namespace Raycasting
     
     internal class Program : Form
     {
+        //Constants
+        private const double Fov = Math.PI / 3;
+        private const int BlockSize = 64;
+        private const int ThreadCount = 1;
+        
+        //Bitmaps
         private Bitmap _map = new Bitmap(@"map.png");
         private readonly Bitmap _texture = new Bitmap(@"texture.png");
-        private readonly double _fov = Math.PI/3;
-        private Point _pos = new Point(50, 50);
-        private PointF _posd = new PointF(50, 50);
+        
+        //Movement
+        private PointF _posd = new PointF(96, 96);
         private double view_angle = 0;
         private HashSet<Keys> _keys = new HashSet<Keys>();
-        private const int ThreadCount = 16;
+       
+        //Drawing related
         private Thread runner;
         private int frames = 0;
         private double fps = 0;
@@ -78,9 +85,10 @@ namespace Raycasting
             var multDirection = forward ? 1 : -1; /* Move Backward if forward is false by subtracting */
             var multAngle = strafe ? 1 : 0; /* Leave angle as if if not strafing */ 
             
-            var newX = _posd.X + multDirection * ((float) Math.Cos(view_angle+(1d/2d*Math.PI*multAngle)) * deltat);
-            var newY = _posd.Y + multDirection * ((float) Math.Sin(view_angle+(1d/2d*Math.PI*multAngle)) * deltat);
+            var newX = _posd.X + multDirection * ((float) Math.Cos(view_angle+(1d/2d*Math.PI*multAngle)) * 2 * deltat);
+            var newY = _posd.Y + multDirection * ((float) Math.Sin(view_angle+(1d/2d*Math.PI*multAngle)) * 2 * deltat);
             if (_map.GetPixel((int) newX, (int) newY) != Color.FromArgb(255, 255, 255, 255)) return;
+            if (newX < 1 || newY < 1) return;
             _posd.X = newX;
             _posd.Y = newY;
         }
@@ -98,8 +106,6 @@ namespace Raycasting
             
             var deltat = deltaStopwatch.ElapsedMilliseconds / 10f;
             deltaStopwatch.Restart();
-            _pos.X = (int) _posd.X % Width;
-            _pos.Y = (int) _posd.Y % Height;
             foreach (var key in _keys)
             {
                 
@@ -145,74 +151,157 @@ namespace Raycasting
             //Background
             e.Graphics.FillRectangle(Brushes.Cyan, 0, 0,Width, Height/2);
             e.Graphics.FillRectangle(Brushes.Beige, 0, Height/2, Width, Height/2);
-            
-            var rects = ArrayList.Synchronized(new ArrayList());
-            var count = 0;
-            for (var i = 0; i < ThreadCount; i++)
-            {
-                Interlocked.Increment(ref count);
-                var i1 = i;
-                ThreadPool.QueueUserWorkItem((object stateInfo) =>
-                {
-                    var result = Raycast(view_angle - _fov / 2 + i1 * (_fov / ThreadCount),
-                        view_angle - _fov / 2 + (i1 + 1) * (_fov / ThreadCount), _fov / Width,
-                        Width / ThreadCount * i1);
-                    rects.AddRange(result);
-                    Interlocked.Decrement(ref count);
-                });
-            }
-            while(count > 0){}
 
-            foreach (var rect in rects)
+            //3D STUFF
+            var x = 0;
+            for (var angle = view_angle - (Fov / 2d); angle < view_angle + (Fov / 2d); angle += Fov / Width)
             {
-                var casted = (Rectangles) rect;
-                e.Graphics.DrawImage(_texture, casted.DestRect, casted.SrcRect, GraphicsUnit.Pixel);
+                
+                //Find Intersection
+                var horizontalIntersection = FindHorizontalIntersection(angle);
+                var verticalIntersection = FindVerticalIntersection(angle);
+                var horizontalDist = GetDistance(_posd, horizontalIntersection);
+                var verticalDist = GetDistance(_posd, verticalIntersection);
+                var isHorizontalIntersection = horizontalDist < verticalDist && horizontalIntersection.X > 0;
+                var intersection = isHorizontalIntersection ? horizontalIntersection : verticalIntersection;
+                var distorted_distance = isHorizontalIntersection ? horizontalDist : verticalDist;
+                
+                //Calculate Distance
+                var dist = Math.Cos(view_angle - angle) * distorted_distance;
+                var projected_height = 64 / dist * (Width/(2*Math.Tan(Fov/2)));
+                
+                //Draw
+                if (intersection.X > 1 && intersection.X != _map.Width && intersection.Y > 1 &&
+                    intersection.Y != _map.Height)
+                {
+                    var textureIndex = isHorizontalIntersection
+                        ? (intersection.X % BlockSize * (_texture.Width / BlockSize))
+                        : (intersection.Y % BlockSize * (_texture.Width / BlockSize));
+                    e.Graphics.DrawImage(_texture,
+                        new Rectangle(x, (int) (Height / 2d - projected_height / 2d), 1, (int) projected_height),
+                        new Rectangle(textureIndex, 0, 1, _texture.Height), GraphicsUnit.Pixel);
+                }
+                else
+                {
+                    e.Graphics.FillRectangle(Brushes.Red, new Rectangle(x, (int) (Height / 2d - projected_height / 2d), 1, (int) projected_height));
+                }
+
+                x++;
             }
+            
             
             //Minimap
-            
-            e.Graphics.DrawImage(_map, new Rectangle(0, 0, 100, 100));
-            var smallX = (int) (_pos.X * (100.0 / _map.Width));
-            var smallY = (int) (_pos.Y * (100.0 / _map.Height));
+            var w = Width * 0.1;
+            var h = Height * 0.1;
+            e.Graphics.DrawImage(_map, new Rectangle(0, 0, (int) w, (int) h));
+            int smallX = (int) (_posd.X * (w / _map.Width));
+            int smallY = (int) (_posd.Y * (h / _map.Height));
             e.Graphics.FillEllipse(Brushes.Green, smallX, smallY, 5, 5);
+
             
+            //FPS
+            e.Graphics.FillRectangle(Brushes.White, Width-90, 10, 75, 15);
             e.Graphics.DrawString("FPS: " + Math.Round(fps, 2), DefaultFont, Brushes.Black, Width-90, 10);
             frames++;
         }
 
+        private Point FindVerticalIntersection(double angle)
+        {
+            var A = new Point();
+            int Ya, Xa;
+            if (Math.Cos(angle) > 0)
+            {
+                //Facing right
+                A.X = (int) (_posd.X / BlockSize) * BlockSize + BlockSize;
+                Xa = BlockSize;
+            }else if (Math.Cos(angle) < 0)
+            {
+                //Facing left
+                A.X = (int) (_posd.X / BlockSize) * BlockSize -1;
+                Xa = -BlockSize;
+            }
+            else
+            {
+                return new Point(-1, -1);
+            }
+            
+            Ya = (int) (BlockSize * Math.Tan(angle));
+            Ya = Math.Sin(angle) >= 0 ? Math.Abs(Ya) : -Math.Abs(Ya);
+            A.Y = (int) (_posd.Y + (A.X - _posd.X) * Math.Tan(angle));
+
+            while (!IsWall(A))
+            {
+                A.X += Xa;
+                A.Y += Ya;
+
+            }
+
+            return A;
+        }
+
+        private Point FindHorizontalIntersection(double angle)
+        {
+            var A = new PointF();
+            float Ya, Xa;
+            if (Math.Sin(angle) < 0)
+            {
+                //Facing up
+                Ya = -BlockSize;
+              
+                A.Y = (int) (_posd.Y / BlockSize) * BlockSize;
+                A.X = (int) (_posd.X + ((A.Y - _posd.Y)/ Math.Tan(angle)));
+                A.Y--;
+            }else if (Math.Sin(angle) > 0)
+            {
+                //Facing down
+                Ya = BlockSize;
+                
+                A.Y = (int) (_posd.Y / BlockSize) * BlockSize + BlockSize;
+                A.X = (int) (_posd.X + ((A.Y - _posd.Y)/ Math.Tan(angle)));
+            }
+            else
+            {
+                return new Point(-1, -1);
+            }
+            
+            Xa = (float) (BlockSize / Math.Tan(angle));
+            Xa = Math.Cos(angle) <= 0 ? -1 * Math.Abs(Xa) : Math.Abs(Xa);
+            
+            
+            while (!IsWall(A))
+            {
+                A.X += Xa;
+                A.Y += Ya;
+            }
+            
+             
+            return new Point((int)A.X, (int)A.Y);
+
+        }
+
+        private bool IsWall(PointF point)
+        {
+            return IsWall(new Point((int) point.X, (int) point.Y));
+        }
+
+        private bool IsWall(Point point)
+        {
+            if (point.X < 0 || point.X >= _map.Width) return true;
+            if (point.Y < 0 || point.Y >= _map.Height) return true;
+            return _map.GetPixel(point.X, point.Y) != Color.FromArgb(255, 255, 255, 255);
+        }
+
         private ArrayList Raycast(double minAngle, double maxAngle, double stepSize, double xstart)
         {
-            var rects = new ArrayList();
-            //Rendering
-            var x = xstart;
+            return null;
+        }
 
-            for (var angle = minAngle; angle < maxAngle; angle += stepSize)
-            {
-                var cx = (double) _posd.X;
-                var cy = (double) _posd.Y;
 
-                /* Search Wall */
-                while (_map.GetPixel((int) cx, (int) cy) == Color.FromArgb(255, 255, 255, 255))
-                {
-                    cx += Math.Cos(angle);
-                    cy += Math.Sin(angle);
-                }
-
-                /* Distance Calculation */
-                var beta = angle - view_angle;
-                var distorted = Math.Sqrt((cx - _posd.X) * (cx - _posd.X) + (cy - _posd.Y) * (cy - _posd.Y));
-                var dist = Math.Cos(beta) * distorted;
-                var height = 32 / dist * ((Width/2) /Math.Tan(_fov/2));
-                
-                /* Texture Calculation */
-                var pixCol = _map.GetPixel((int) cx, (int) cy);
-                var red = (int) pixCol.R;
-                var destRect = new Rectangle((int) x, (int) (Height / 2 - height / 2), 1, (int) height);
-                var srcRect = new Rectangle(red, 0, 1, _texture.Height);
-                rects.Add(new Rectangles(destRect, srcRect));
-                x++;
-            }
-            return rects;
+        private static double GetDistance(PointF a, PointF b)
+        {
+            var deltaX = b.X - a.X;
+            var deltaY = b.Y - a.Y;
+            return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
         }
 
         public static void Main(string[] args)
